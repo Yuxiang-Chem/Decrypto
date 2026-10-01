@@ -1,0 +1,26 @@
+import { database } from '@/db/game-store';
+import { act, newGame, makePlayer, view, GameError, type Game } from '@/lib/game/engine';
+export const dynamic='force-dynamic';
+const ABANDONED_MS=7*24*60*60*1000;
+const headers={'Cache-Control':'no-store, private','Vary':'Cookie','X-Content-Type-Options':'nosniff'};
+function json(data:unknown,status=200,cookie?:string){return Response.json(data,{status,headers:{...headers,...(cookie?{'Set-Cookie':cookie}:{})}});}
+async function identity(req:Request){const cookie=(req.headers.get('cookie')??'').split(';').map(s=>s.trim()).find(s=>s.startsWith('dc_player='))?.slice(10);const token=cookie&&/^[a-f0-9-]{36}$/.test(cookie)?cookie:crypto.randomUUID();const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(token));const hash=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');return {hash,cookie:`dc_player=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${new URL(req.url).protocol==='https:'?'; Secure':''}`};}
+function roomId(value:unknown){if(typeof value!=='string'||!(/^[A-HJ-NP-Z2-9]{6}$/).test(value))throw new GameError('请输入正确的 6 位房间号。');return value;}
+async function load(id:string){const row=await database().prepare('SELECT state, version FROM rooms WHERE id = ?').bind(id).first<{state:string;version:number}>();if(!row)throw new GameError('没有找到这个房间，请检查房间号。',404);return {g:JSON.parse(row.state) as Game,v:row.version};}
+function failure(e:unknown){if(e instanceof GameError)return json({error:e.message},e.status);console.error(JSON.stringify({event:'game_request_failed',message:e instanceof Error?e.message:'unknown'}));return json({error:'暂时无法连接房间，输入已保留，请稍后重试。'},503);}
+export async function GET(req:Request){try{const id=roomId(new URL(req.url).searchParams.get('room'));const {hash,cookie}=await identity(req);const {g,v}=await load(id);const p=g.players.find(p=>p.hash===hash);if(!p)throw new GameError('请先加入房间。',401);return json(view(g,p,id,v),200,cookie);}catch(e){return failure(e);}}
+export async function POST(req:Request){try{
+ if(!req.headers.get('content-type')?.startsWith('application/json'))throw new GameError('请使用游戏页面提交。',415);
+ const origin=req.headers.get('origin');if(origin&&origin!==new URL(req.url).origin)throw new GameError('请求来源不正确。',403);
+ // Bound the body even if Content-Length is missing or dishonest.
+ const reader=req.body?.getReader();if(!reader)throw new GameError('请求内容为空。');const chunks:Uint8Array[]=[];let length=0;while(true){const {done,value}=await reader.read();if(done)break;length+=value.length;if(length>4096){await reader.cancel();throw new GameError('输入内容过长。',413);}chunks.push(value);}const bytes=new Uint8Array(length);let pos=0;for(const chunk of chunks){bytes.set(chunk,pos);pos+=chunk.length;}let body:Record<string,unknown>;try{body=JSON.parse(new TextDecoder().decode(bytes));}catch{throw new GameError('请求格式不正确。');}if(!body||typeof body!=='object'||Array.isArray(body))throw new GameError('请求格式不正确。');
+ const {hash,cookie}=await identity(req);const action=String(body.action);
+ if(action==='create'){await database().prepare('DELETE FROM rooms WHERE updated_at < ?').bind(Date.now()-ABANDONED_MS).run();const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';for(let attempt=0;attempt<4;attempt++){const random=crypto.getRandomValues(new Uint8Array(6));const id=Array.from(random,b=>alphabet[b%32]).join('');const p=makePlayer(hash),g=newGame(p);const result=await database().prepare('INSERT INTO rooms (id, state, version, updated_at) VALUES (?, ?, 0, ?) ON CONFLICT(id) DO NOTHING').bind(id,JSON.stringify(g),Date.now()).run();if(result.meta.changes)return json(view(g,p,id,0),201,cookie);}throw new GameError('房间创建繁忙，请重试。',503);}
+ const id=roomId(body.room);
+ for(let retry=0;retry<4;retry++) {let loaded;try{loaded=await load(id);}catch(e){if(action==='leave'&&e instanceof GameError&&e.status===404)return json({left:true},200,cookie);throw e;}const {g,v}=loaded;let p=g.players.find(p=>p.hash===hash);
+ if(action==='leave'){if(!p)return json({left:true},200,cookie);act(g,p,action,body);if(!g.players.length){const removed=await database().prepare('DELETE FROM rooms WHERE id = ? AND version = ?').bind(id,v).run();if(removed.meta.changes)return json({left:true},200,cookie);continue;}const result=await database().prepare('UPDATE rooms SET state = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?').bind(JSON.stringify(g),Date.now(),id,v).run();if(result.meta.changes)return json({left:true},200,cookie);continue;}
+ if(action==='join'){if(!p){if(g.phase!=='setup'||g.players.length>=4)throw new GameError('房间已满或游戏已经开始。');p=makePlayer(hash);g.players.push(p);}else return json(view(g,p,id,v),200,cookie);}
+ else {if(!p)throw new GameError('请先加入房间。',401);if(['replace','ready','rematch','swap','shuffle','start'].includes(action)&&body.version!==v)throw new GameError('房间刚刚更新，请确认当前词语后重试。',409);act(g,p,action,body);}
+ const result=await database().prepare('UPDATE rooms SET state = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?').bind(JSON.stringify(g),Date.now(),id,v).run();if(result.meta.changes)return json(view(g,p!,id,v+1),200,cookie);
+ }throw new GameError('另一位玩家刚刚提交，请稍后重试。',409);
+ }catch(e){return failure(e);}}
