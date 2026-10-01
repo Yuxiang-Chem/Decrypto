@@ -17,16 +17,17 @@ for(let round=1;round<=3;round++)for(const team of ['A','B']){
  await request(answerer,'clues',{clues:['越权','越权二','越权三']},400);
  await request(giver,'clues',{clues:[`${round}${team}线索甲`,`${round}${team}线索乙`,`${round}${team}线索丙`]});
  if(round>1){await read(answerer);await request(answerer,'guess',{numbers:code},400);await read(opponent);await request(opponent,'draft',{numbers:[1,2,0]});await read(answerer);assert.equal(players[answerer].state.draft,null);await request(opponent,'guess',{numbers:code});await read(answerer);assert.equal(players[answerer].state.intercept,null);}else assert.equal(players[giver].state.phase,'answer');
- await read(answerer);await request(answerer,'guess',{numbers:code});const revealed=players[answerer].state;assert.equal(revealed.phase,'reveal');assert.equal(revealed.history.length,(round-1)*2+(team==='A'?1:2));
+ await read(answerer);await request(answerer,'guess',{numbers:code});const revealed=players[answerer].state;assert.equal(revealed.phase,round===3&&team==='B'?'tiebreak':'reveal');assert.equal(revealed.history.length,(round-1)*2+(team==='A'?1:2));
  // Duplicate confirmation must not score twice.
  await request(answerer,'guess',{numbers:code},400);
  const other=await read(opponent);assert.deepEqual(other.state.history,revealed.history);assert.deepEqual(other.state.code,code);
- await request(answerer,'next');
+ if(revealed.phase==='reveal')await request(answerer,'next');
 }
 await read(0);assert.equal(players[0].state.phase,'tiebreak');assert.equal(players[0].state.scores.A.interceptions,2);assert.equal(players[0].state.scores.B.interceptions,2);
 const wordsA=players[0].state.words;await read(2);const wordsB=players[2].state.words;
+assert.deepEqual(players[0].state.opponentWordLengths,wordsB.map(w=>Array.from(w).length));
 await request(0,'tie',{words:wordsB});await read(2);assert.equal(players[2].state.tieAnswers,null);await request(2,'tie',{words:wordsA});assert.equal(players[2].state.winner,'draw');await read(0);await request(0,'rematch');assert.equal(players[0].state.phase,'setup');assert.equal(players[0].state.history.length,0);
 const csrf=await fetch(`${base}/api/game`,{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://evil.example',Cookie:players[0].cookie},body:JSON.stringify({action:'create'})});assert.equal(csrf.status,403);
 await request(3,'leave');assert.equal((await read(0)).state.players.length,3);for(let i=0;i<3;i++)await request(i,'leave');assert.equal((await read(0,room)).status,404);
-console.log('PASS: four independent sessions, secrecy, replacement, stale writes, six turns, scoring, tiebreak, rematch, unauthorized actions, CSRF.');
+console.log('PASS: four independent sessions, secrecy, replacement, stale writes, six turns, automatic round settlement, tiebreak hints, rematch, unauthorized actions, CSRF.');
 // Intentional simultaneous guesses must apply only once.

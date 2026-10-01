@@ -20,10 +20,17 @@ function strings(value:unknown,n:number,max:number){requireThat(Array.isArray(va
 const same=(a:number[]|null,b:number[])=>!!a&&a.join('')===b.join('');
 const normalized=(s:string)=>s.normalize('NFKC').replace(/\s/g,'').toLocaleLowerCase();
 function startTurn(g:Game){g.code=shuffled([1,2,3,4]).slice(0,3);g.clues=[];g.intercept=null;g.answer=null;g.draft=[0,0,0];g.phase='clues';}
-export function resolveRound(g:Game){const a=g.scores.A,b=g.scores.B;const terminal=g.round>=8||[a,b].some(s=>s.interceptions>=2||s.mistakes>=2);if(!terminal)return;
- const tie=(a.interceptions>=2&&a.mistakes>=2)||(b.interceptions>=2&&b.mistakes>=2)||(a.interceptions>=2&&b.interceptions>=2)||(a.mistakes>=2&&b.mistakes>=2)||g.round>=8;
- if(tie){const x=a.interceptions-a.mistakes,y=b.interceptions-b.mistakes;if(x===y){g.phase='tiebreak';g.reason='净得分相同，猜对手的秘密词决定胜负。';return;}g.winner=x>y?'A':'B';g.reason='按「截获次数 − 沟通失误」的净得分决胜。';}
- else {g.winner=a.interceptions>=2||b.mistakes>=2?'A':'B';g.reason=g.scores[g.winner].interceptions>=2?'成功截获两次密码。':'对手累计两次沟通失误。';}g.phase='finished';}
+export function resolveRound(g:Game){
+ const a=g.scores.A,b=g.scores.B;
+ const aWins=a.interceptions>=2||b.mistakes>=2;
+ const bWins=b.interceptions>=2||a.mistakes>=2;
+ if(aWins!==bWins){g.winner=aWins?'A':'B';g.reason=g.scores[g.winner].interceptions>=2?'成功截获两次密码。':'对手累计两次沟通失误。';g.phase='finished';return;}
+ if(!aWins&&!bWins&&g.round<8)return;
+ if(aWins&&bWins){g.phase='tiebreak';g.reason='双方在本轮都触发胜负条件，进入秘密词加赛。';return;}
+ const x=a.interceptions-a.mistakes,y=b.interceptions-b.mistakes;
+ if(x===y){g.phase='tiebreak';g.reason='八轮结束，净得分相同，进入秘密词加赛。';return;}
+ g.winner=x>y?'A':'B';g.reason='八轮结束，按「截获次数 − 沟通失误」的净得分决胜。';g.phase='finished';
+}
 function restart(g:Game){const fresh=newGame(g.players[0]);fresh.players=g.players.map(x=>({...x,ready:false}));fresh.used=g.used;fresh.words={A:[],B:[]};fresh.words.A=pick(fresh,4);fresh.words.B=pick(fresh,4);Object.assign(g,fresh);}
 function regroup(g:Game){g.players.forEach(x=>{x.ready=false;});g.words.A=pick(g,4);g.words.B=pick(g,4);g.notes=emptyNotes();}
 export function act(g:Game,p:Player,action:string,input:Record<string,unknown>){
@@ -41,10 +48,10 @@ export function act(g:Game,p:Player,action:string,input:Record<string,unknown>){
  const giver=team===g.active&&p.seat===seatFor(g);const captain=team!==g.active&&p.seat===seatFor(g);
  if(action==='clues'){requireThat(g.phase==='clues'&&giver,'只有本轮出题人可以提交线索。');const clues=strings(input.clues,3,40);requireThat(new Set(clues.map(normalized)).size===3,'三条线索不能相同。');const prior=g.history.filter(h=>h.team===team).flatMap(h=>h.clues).map(normalized);requireThat(clues.every(c=>!prior.includes(normalized(c))&&!g.words[team].some(w=>normalized(w)===normalized(c))),'线索不能重复使用，也不能直接使用本队秘密词。');g.clues=clues;g.phase=g.round===1?'answer':'intercept';return;}
  if(action==='draft'){requireThat(g.phase==='intercept'&&captain,'本轮由对手队的指定提交人选择编号。');g.draft=numbers(input.numbers,true);return;}
- if(action==='guess'){const guess=numbers(input.numbers);if(g.phase==='intercept'){requireThat(captain,'请由本队本轮指定提交人确认猜测。');g.intercept=guess;g.draft=guess;g.phase='answer';return;}requireThat(g.phase==='answer'&&team===g.active&&!giver,'当前等待出题人的队友作答。');g.answer=guess;const intercepted=same(g.intercept,g.code),missed=!same(guess,g.code);if(intercepted)g.scores[other(g.active)].interceptions++;if(missed)g.scores[g.active].mistakes++;g.history.push({round:g.round,team:g.active,code:[...g.code],clues:[...g.clues],intercept:g.intercept,answer:guess,intercepted,missed});g.phase='reveal';return;}
+ if(action==='guess'){const guess=numbers(input.numbers);if(g.phase==='intercept'){requireThat(captain,'请由本队本轮指定提交人确认猜测。');g.intercept=guess;g.draft=guess;g.phase='answer';return;}requireThat(g.phase==='answer'&&team===g.active&&!giver,'当前等待出题人的队友作答。');g.answer=guess;const intercepted=same(g.intercept,g.code),missed=!same(guess,g.code);if(intercepted)g.scores[other(g.active)].interceptions++;if(missed)g.scores[g.active].mistakes++;g.history.push({round:g.round,team:g.active,code:[...g.code],clues:[...g.clues],intercept:g.intercept,answer:guess,intercepted,missed});g.phase='reveal';if(g.active==='B')resolveRound(g);return;}
  if(action==='next'){requireThat(g.phase==='reveal','请先完成本次答题。');if(g.active==='B'){resolveRound(g);if(g.phase!=='reveal')return;g.round++;g.active='A';}else g.active='B';startTurn(g);return;}
  if(action==='tie'){requireThat(g.phase==='tiebreak'&&p.seat===seatFor(g),'加赛由本队本轮出题人提交。');requireThat(!g.tie[team],'本队已提交加赛答案。');g.tie[team]=strings(input.words,4,20);if(g.tie.A&&g.tie.B){const count=(t:Team)=>new Set(g.tie[t]!.map(normalized).filter(w=>g.words[other(t)].map(normalized).includes(w))).size;const a=count('A'),b=count('B');g.winner=a===b?'draw':a>b?'A':'B';g.phase='finished';g.reason=`秘密词加赛：A 队猜中 ${a} 个，B 队猜中 ${b} 个。相同词只计一次。`;}return;}
  throw new GameError('未知操作。');
 }
-export function view(g:Game,p:Player,room:string,version:number){const team=p.team;const revealed=g.phase==='reveal'||g.phase==='finished'||g.phase==='tiebreak';const giver=team===g.active&&p.seat===seatFor(g);return {room,version,gameId:g.gameId,turnKey:key(g),me:p.id,team,seat:p.seat,host:g.players[0].id===p.id,players:g.players.map(({id,team,seat,ready})=>({id,team,seat,ready})),words:team&&g.phase!=='setup'?g.words[team]:[],round:g.round,active:g.active,phase:g.phase,giver,code:revealed||giver?g.code:null,clues:g.clues,draft:team&&team!==g.active?g.draft:null,intercept:revealed||team&&team!==g.active?g.intercept:null,answer:revealed?g.answer:null,history:team?g.history:[],notes:team?(g.notes?.[team]??emptyNotes()[team]):null,scores:g.scores,tieSubmitted:{A:!!g.tie.A,B:!!g.tie.B},tieAnswers:g.phase==='finished'?g.tie:null,allWords:g.phase==='finished'?g.words:null,winner:g.winner,reason:g.reason};}
+export function view(g:Game,p:Player,room:string,version:number){const team=p.team;const revealed=g.phase==='reveal'||g.phase==='finished'||g.phase==='tiebreak';const giver=team===g.active&&p.seat===seatFor(g);return {room,version,gameId:g.gameId,turnKey:key(g),me:p.id,team,seat:p.seat,host:g.players[0].id===p.id,players:g.players.map(({id,team,seat,ready})=>({id,team,seat,ready})),words:team&&g.phase!=='setup'?g.words[team]:[],round:g.round,active:g.active,phase:g.phase,giver,code:revealed||giver?g.code:null,clues:g.clues,draft:team&&team!==g.active?g.draft:null,intercept:revealed||team&&team!==g.active?g.intercept:null,answer:revealed?g.answer:null,history:team?g.history:[],notes:team?(g.notes?.[team]??emptyNotes()[team]):null,scores:g.scores,tieSubmitted:{A:!!g.tie.A,B:!!g.tie.B},opponentWordLengths:g.phase==='tiebreak'&&team?g.words[other(team)].map(w=>Array.from(w).length):null,tieAnswers:g.phase==='finished'?g.tie:null,allWords:g.phase==='finished'?g.words:null,winner:g.winner,reason:g.reason};}
 export type GameView=ReturnType<typeof view>;
