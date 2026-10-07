@@ -28,9 +28,9 @@ const wordsA=players[0].state.words;await read(2);const wordsB=players[2].state.
 assert.deepEqual(players[0].state.opponentWordLengths,wordsB.map(w=>Array.from(w).length));
 await request(0,'tie',{words:wordsB});await read(2);assert.equal(players[2].state.tieAnswers,null);await request(2,'tie',{words:wordsA});assert.equal(players[2].state.winner,'draw');await read(0);await request(0,'rematch');assert.equal(players[0].state.phase,'setup');assert.equal(players[0].state.history.length,0);
 // The server persists expiration even when nobody submits an answer.
-await request(0,'settings',{guessSeconds:10});
+await request(0,'settings',{guessSeconds:10,clueSeconds:10});
 await request(0,'start');for(let i=0;i<4;i++){await read(i);await request(i,'ready',{ready:true});}
-await read(0);await request(0,'clues',{clues:['超时甲','超时乙','超时丙']});assert.ok(players[0].state.deadline);
+await read(0);await request(0,'clueDraft',{clues:['超时甲','','超时丙']});await read(1);assert.equal(players[1].state.clueDraft,null);assert.ok(players[0].state.deadline);await new Promise(resolve=>setTimeout(resolve,10100));await read(1);assert.equal(players[1].state.phase,'guess');assert.deepEqual(players[1].state.clues,['超时甲','','超时丙']);assert.equal(players[1].state.scores.A.mistakes,0);
 await new Promise(resolve=>setTimeout(resolve,10100));await read(1);assert.equal(players[1].state.phase,'reveal');assert.equal(players[1].state.scores.A.mistakes,1);await read(2);assert.equal(players[2].state.history.length,1);
 const csrf=await fetch(`${base}/api/game`,{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://evil.example',Cookie:players[0].cookie},body:JSON.stringify({action:'create'})});assert.equal(csrf.status,403);
 await request(3,'leave');assert.equal((await read(0)).state.players.length,3);for(let i=0;i<3;i++)await request(i,'leave');assert.equal((await read(0,room)).status,404);
